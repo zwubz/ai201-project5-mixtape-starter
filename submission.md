@@ -104,3 +104,13 @@ This traces what happens when a user adds a song to a collaborative playlist:
 *   **Found the root cause:** Followed the routing endpoint `/feed/<user_id>/listening-now` in `routes/feed.py` to `get_friends_listening_now` in `services/feed_service.py`. Checked `RECENT_THRESHOLD` on line 13 and confirmed it was set to 24 hours.
 *   **The root cause:** The `RECENT_THRESHOLD` constant in `feed_service.py` was set to `timedelta(hours=24)`. In a real-time listening feed, "now" is expected to span a short period (e.g., 30 minutes to match the seed data comment), whereas 24 hours includes activities from the previous calendar day. Because of this, the database filter `ListeningEvent.listened_at >= cutoff` queried and returned events that were up to a day old.
 *   **Fix and side-effect check:** Changed `RECENT_THRESHOLD` to `timedelta(minutes=30)`. Verified that friends who listened 10 hours ago are successfully filtered out of the "Listening Now" feed, while friends who listened 10-20 minutes ago are still included. Confirmed that the separate historic `get_activity_feed` remains unaffected because it does not use the `RECENT_THRESHOLD` constant and instead relies on a numeric query limit.
+
+### Issue 3: The same song keeps showing up twice in search
+*   **How was reproduced:**
+    *   *Inputs:* Search query "Crown Heights".
+    *   *Sequence of actions:* Called the search endpoint `/songs/search?q=Crown`.
+    *   *Data condition:* The target song *Crown Heights Anthem* was seeded with 3 distinct tags.
+    *   *Trigger:* The search response returned the same song 3 times in the results list.
+*   **Found the root cause:** Followed `/songs/search` in `routes/songs.py` to `search_songs()` in `services/search_service.py`. Inspected the database query.
+*   **The root cause:** The query in `search_songs` used `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` to join the song tags association table. Since the query only filters on `Song.title` and `Song.artist` and does not project or group by tags, the join is redundant. However, because a song has multiple tags, the database join generated $N$ rows for a song with $N$ tags. Because the query did not use `.distinct()`, the database returned duplicate rows, resulting in duplicate model objects.
+*   **Fix and side-effect check:** Removed the redundant `.outerjoin(song_tags)` from the query. Verified that searching for *Crown Heights Anthem* now returns exactly one copy. Checked that the tags are still loaded and returned in the serialized dictionary via the subquery-loaded relationship defined on the `Song` model, confirming no loss of detail.
