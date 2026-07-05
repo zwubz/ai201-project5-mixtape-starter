@@ -1,0 +1,96 @@
+# Codebase Map: Mixtape
+
+This document maps out the architecture, main files, data flows, design patterns, and bug reproduction steps for the Mixtape application.
+
+---
+
+## File and Module Responsibilities
+
+### Core Configuration and Models
+*   **[app.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/app.py)**: The application factory. Configures Flask, initializes Flask-SQLAlchemy (`db`), registers the blueprints (`/songs`, `/playlists`, `/users`, `/feed`), and sets up the database context.
+*   **[models.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/models.py)**: Defines the SQLAlchemy data schemas and relationships.
+    *   *Primary Models*: `User` (tracks streaks and credentials), `Song` (tracks shared music), `Playlist` (tracks curated lists), `Tag` (tracks genre/vibe tags), `Rating` (stores 1-5 song reviews), and `Notification` (tracks in-app alerts).
+    *   *Join Tables*:
+        *   `friendships`: A symmetric many-to-many join table connecting users.
+        *   `song_tags`: A many-to-many join table mapping tags to songs.
+        *   `playlist_entries`: A specialized many-to-many join table mapping songs to playlists. It holds metadata including `position` (for playlist sorting order), `added_by`, and `added_at`.
+
+---
+
+### Routing Layer (routes/)
+All route modules parse incoming HTTP requests (JSON bodies, query parameters), handle error parsing, and return JSON payloads.
+*   **[routes/songs.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/songs.py)**: Entry points for searching songs, fetching song details, rating songs, and recording listening events.
+*   **[routes/playlists.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/playlists.py)**: Entry points for creating playlists, fetching playlist contents, and adding songs.
+*   **[routes/users.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/users.py)**: Entry points for looking up user profiles, viewing active streaks, and managing notification lists.
+*   **[routes/feed.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/feed.py)**: Entry points for fetching "listening now" activity and historic activity from friends.
+
+---
+
+### Service Layer (services/)
+This layer encapsulates the core business logic and performs all database mutations.
+*   **[services/search_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/search_service.py)**: Implements case-insensitive song querying by title and artist.
+*   **[services/playlist_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/playlist_service.py)**: Handles playlist creation and retrieves playlist tracks sorted by their entry position.
+*   **[services/streak_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/streak_service.py)**: Handles user listening history and calculates daily streaks based on consecutive listen days.
+*   **[services/feed_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/feed_service.py)**: Compiles timelines of what friends are listening to (including a 24-hour active feed).
+*   **[services/notification_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/notification_service.py)**: Orchestrates ratings and playlist additions, and generates `Notification` entries for affected users.
+
+---
+
+## Core Data Flow: Adding a Song to a Playlist
+
+This traces what happens when a user adds a song to a collaborative playlist:
+
+```
+[ POST /playlists/<playlist_id>/songs ]
+                  |
+                  v
+   [ routes/playlists.py: add_song() ]
+                  | (Extracts body params: song_id, added_by)
+                  v
+[ services/notification_service.py: add_to_playlist() ]
+                  |
+                  +--> Checks database for Song, User, and Playlist models
+                  +--> Appends Song to playlist.songs if not already present
+                  |
+                  v (If adder is NOT the original song sharer)
+[ services/notification_service.py: create_notification() ]
+                  |
+                  v
+         [ db.session.commit() ]
+                  | (Saves entries to playlist_entries and notification tables)
+                  v
+       [ Return 201 Created JSON ]
+```
+
+1. **Client Action:** The client makes a `POST` request to `/playlists/<playlist_id>/songs` with JSON containing `{"song_id": "<UUID>", "added_by": "<UUID>"}`.
+2. **Routing:** `add_song()` in `routes/playlists.py` receives the request, extracts the path parameter and body variables, and calls `add_to_playlist(playlist_id, song_id, added_by)`.
+3. **Business Logic and Association:** In `services/notification_service.py`, `add_to_playlist()` verifies that all entities exist. It appends the song to the playlist's relationship, which automatically creates a join record in `playlist_entries`.
+4. **Notification Trigger:** The function compares the song's original owner (`song.shared_by`) with the user who added it. If they are different, it calls `create_notification` to write a new alert row into the `notification` table.
+5. **Database Commit:** The transaction is committed to save both the playlist entry and the notification, returning a `201` success status to the client.
+
+---
+
+## Architectural Patterns Noticed
+
+1. **Thin Routing Layer (Controller-Service Separation)**:
+   Blueprints under `routes/` do not query or mutate the database directly. Instead, they act as thin controllers that parse input data (like JSON or query params), call service routines, catch `ValueError` exceptions to translate them into standard HTTP status codes (`400` for bad input, `404` for missing records), and return responses via `jsonify`.
+   
+2. **UUID Primary Keys**:
+   Instead of traditional auto-incrementing integers, all records use standard v4 UUID string identifiers. This decouples database generation from sequence collision, though it requires strict string validation in the routes.
+   
+3. **Database-Driven Relationships**:
+   Many-to-many associations (like friendships, song tags, and playlists) are handled through explicit database association tables rather than simple arrays. Rich join tables like `playlist_entries` append metadata directly to connection instances, allowing the app to scale relational constraints safely.
+
+---
+
+## Root Cause Analysis
+
+### Issue 1: My listening streak keeps resetting
+*   **How you reproduced it:**
+    *   *Inputs:* A user with `listening_streak = 5` and a `last_listened_at` timestamp set to a Saturday (e.g., June 27, 2026).
+    *   *Sequence of actions:* Recorded a listening event for that user on Sunday (e.g., June 28, 2026).
+    *   *Data condition:* The consecutive-day gap `days_since_last` is exactly 1 day.
+    *   *Trigger:* The logic triggered an execution path that reset the user's streak to 1 instead of incrementing it to 6. This was also verified by the failure of the unit test `test_streak_increments_on_sunday`.
+*   **Found the root cause:** Traced the `/songs/<song_id>/listen` POST route in `routes/songs.py` which calls `record_listening_event` in `services/streak_service.py`. Followed the call stack into `update_listening_streak()`. Inspected line 73 and noticed the condition `and today.weekday() != 6` on the increment block, which specifically targets Sundays and changes the execution flow.
+*   **The root cause:** Python's `datetime.date.weekday()` returns `6` for Sunday. In `streak_service.py`, the condition `elif days_since_last == 1 and today.weekday() != 6:` explicitly prevented the streak from incrementing if the current day was Sunday. When a user listened on Sunday after listening on Saturday, `days_since_last == 1` was true, but `today.weekday() != 6` was false. This caused the streak logic to bypass the increment block and fall into the `else` block, resetting `user.listening_streak = 1`.
+*   **Fix and side-effect check:** Removed `and today.weekday() != 6` from the conditional check. This allows any consecutive-day listening event (including Saturday-to-Sunday) to increment the streak. Verified that non-consecutive days (skipped days) still correctly reset the streak to 1, and same-day listens (double counting) do not change the streak. The unit tests in `tests/test_streaks.py` (specifically `test_streak_increments_on_sunday`) now pass.
