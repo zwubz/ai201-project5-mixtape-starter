@@ -6,9 +6,16 @@ This document maps out the architecture, main files, data flows, design patterns
 
 ## File and Module Responsibilities
 
+## AI Usage
+Case 1: As demo in class, debugging was done by skimming through to understand what the code is doing. Instead, I first used AI to go through the main functions to understand what the program is doing and layout the main pieces I need to understand and how everything is mapped together. This gives me a better understanding than skimming through and assuming. That was then layout into this document on how the models, routing layer, service layers are related. With this, I used AI for codebase navigation so I can connect one piece to another.
+Case 2: I asked AI to generate me the regression tests. There were already provided test cases for some of the bugs, I asked AI to generate cases that were not covered. 
+
+I used AI to generate the terminal outputs of what I am expecting for each output. Tests cases not not always accurately reflect what is happening and step by step reproduction takes time so AI generate commands like this to get verified AI output.
+`"from app import create_app, db; from models import User, Song; from services.notification_service import rate_song, get_notifications; app = create_app({'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:'}); ctx = app.app_context(); ctx.push(); db.create_all(); sharer=User(username='sharer', email='s@x.com'); rater=User(username='rater', email='r@x.com'); db.session.add_all([sharer, rater]); db.session.flush(); s=Song(title='Golden Hour', artist='Solange', shared_by=sharer.id); db.session.add(s); db.session.commit(); rate_song(rater.id, s.id, 5); print('Notifications:', [n['body'] for n in get_notifications(sharer.id)])"`
+
 ### Core Configuration and Models
-*   **[app.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/app.py)**: The application factory. Configures Flask, initializes Flask-SQLAlchemy (`db`), registers the blueprints (`/songs`, `/playlists`, `/users`, `/feed`), and sets up the database context.
-*   **[models.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/models.py)**: Defines the SQLAlchemy data schemas and relationships.
+*   **[app.py]**: The application factory. Configures Flask, initializes Flask-SQLAlchemy (`db`), registers the blueprints (`/songs`, `/playlists`, `/users`, `/feed`), and sets up the database context.
+*   **[models.py]**: Defines the SQLAlchemy data schemas and relationships.
     *   *Primary Models*: `User` (tracks streaks and credentials), `Song` (tracks shared music), `Playlist` (tracks curated lists), `Tag` (tracks genre/vibe tags), `Rating` (stores 1-5 song reviews), and `Notification` (tracks in-app alerts).
     *   *Join Tables*:
         *   `friendships`: A symmetric many-to-many join table connecting users.
@@ -19,20 +26,20 @@ This document maps out the architecture, main files, data flows, design patterns
 
 ### Routing Layer (routes/)
 All route modules parse incoming HTTP requests (JSON bodies, query parameters), handle error parsing, and return JSON payloads.
-*   **[routes/songs.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/songs.py)**: Entry points for searching songs, fetching song details, rating songs, and recording listening events.
-*   **[routes/playlists.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/playlists.py)**: Entry points for creating playlists, fetching playlist contents, and adding songs.
-*   **[routes/users.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/users.py)**: Entry points for looking up user profiles, viewing active streaks, and managing notification lists.
-*   **[routes/feed.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/routes/feed.py)**: Entry points for fetching "listening now" activity and historic activity from friends.
+*   **[routes/songs.py](songs.py)**: Entry points for searching songs, fetching song details, rating songs, and recording listening events.
+*   **[routes/playlists.py](playlists.py)**: Entry points for creating playlists, fetching playlist contents, and adding songs.
+*   **[routes/users.py](users.py)**: Entry points for looking up user profiles, viewing active streaks, and managing notification lists.
+*   **[routes/feed.py](feed.py)**: Entry points for fetching "listening now" activity and historic activity from friends.
 
 ---
 
 ### Service Layer (services/)
 This layer encapsulates the core business logic and performs all database mutations.
-*   **[services/search_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/search_service.py)**: Implements case-insensitive song querying by title and artist.
-*   **[services/playlist_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/playlist_service.py)**: Handles playlist creation and retrieves playlist tracks sorted by their entry position.
-*   **[services/streak_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/streak_service.py)**: Handles user listening history and calculates daily streaks based on consecutive listen days.
-*   **[services/feed_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/feed_service.py)**: Compiles timelines of what friends are listening to (including a 24-hour active feed).
-*   **[services/notification_service.py](file:///C:/Users/hppc/Desktop/CodePath/P5/ai201-project5-mixtape-starter/services/notification_service.py)**: Orchestrates ratings and playlist additions, and generates `Notification` entries for affected users.
+*   **[services/search_service.py](search_service.py)**: Implements case-insensitive song querying by title and artist.
+*   **[services/playlist_service.py](playlist_service.py)**: Handles playlist creation and retrieves playlist tracks sorted by their entry position.
+*   **[services/streak_service.py](streak_service.py)**: Handles user listening history and calculates daily streaks based on consecutive listen days.
+*   **[services/feed_service.py](feed_service.py)**: Compiles timelines of what friends are listening to (including a 24-hour active feed).
+*   **[services/notification_service.py](notification_service.py)**: Orchestrates ratings and playlist additions, and generates `Notification` entries for affected users.
 
 ---
 
@@ -134,3 +141,12 @@ This traces what happens when a user adds a song to a collaborative playlist:
 *   **Found the root cause:** Traced the playlist songs route in `routes/playlists.py` to `get_playlist_songs` in `services/playlist_service.py`. Inspected the return statement on line 66.
 *   **The root cause:** The return statement in `get_playlist_songs` was written as `return [song.to_dict() for song in songs[:-1]]`. The Python list slice `[:-1]` truncates the list by dropping the final element. This off-by-one error prevented the last song of any playlist from being returned.
 *   **Fix and side-effect check:** Changed the return statement to `[song.to_dict() for song in songs]` to return all songs in the list. Verified that a 5-song playlist now returns all 5 songs in the correct ascending order of their position, and empty playlists still return an empty list without errors. Unit tests in `tests/test_playlists.py` now pass.
+
+## Regression Tests
+A test was added to verify the rating notifications:
+*   **File:** [test_notifications.py]
+*   **What it verifies:** It asserts that when User B rates User A's song, a `song_rated` notification is generated for User A, and that when User A rates their own song, no notification is created.
+*   **Why it would have failed against the buggy code:** Prior to the fix, `rate_song()` had no code invoking `create_notification()`. Therefore, `get_notifications(sharer.id)` would have returned an empty list, failing the assertion `assert len(sharer_notifs) == 1`.
+Additionally, existing test files covered the Sunday streak and playlist slicing issues:
+*   `test_streak_increments_on_sunday` in `tests/test_streaks.py`: Asserted Sunday streaks incremented to 2. It failed before the fix with `AssertionError: assert 1 == 2`.
+*   `test_playlist_returns_all_songs` in `tests/test_playlists.py`: Asserted that a playlist returns all 5 songs. It failed before the fix with `AssertionError: assert 4 == 5` due to the slicing off-by-one error.
