@@ -114,3 +114,14 @@ This traces what happens when a user adds a song to a collaborative playlist:
 *   **Found the root cause:** Followed `/songs/search` in `routes/songs.py` to `search_songs()` in `services/search_service.py`. Inspected the database query.
 *   **The root cause:** The query in `search_songs` used `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` to join the song tags association table. Since the query only filters on `Song.title` and `Song.artist` and does not project or group by tags, the join is redundant. However, because a song has multiple tags, the database join generated $N$ rows for a song with $N$ tags. Because the query did not use `.distinct()`, the database returned duplicate rows, resulting in duplicate model objects.
 *   **Fix and side-effect check:** Removed the redundant `.outerjoin(song_tags)` from the query. Verified that searching for *Crown Heights Anthem* now returns exactly one copy. Checked that the tags are still loaded and returned in the serialized dictionary via the subquery-loaded relationship defined on the `Song` model, confirming no loss of detail.
+
+### Issue 4: I got notified when a friend added my song to a playlist but not when they rated it
+*   **How was reproduced:**
+    *   *Inputs:* User A has shared a song. User B rates User A's song with a score of 5.
+    *   *Sequence of actions:* Made a `POST` request to `/songs/<song_id>/rate` representing User B rating the song.
+    *   *Data condition:* User B is not the original sharer of the song.
+    *   *Trigger:* The rating was successfully stored in the database, but querying User A's notifications via `/users/<user_id>/notifications` returned an empty list.
+*   **Found the root cause:** Traced `/songs/<song_id>/rate` in `routes/songs.py` to `rate_song` in `services/notification_service.py`. Compared the function structure with `add_to_playlist` in the same service.
+*   **The root cause:** The function `rate_song` recorded the rating in the database but lacked any notification dispatch logic. It did not perform a check to see if the rater was different from the original song sharer (`song.shared_by != user_id`) and failed to call `create_notification()` to write a notification entry.
+*   **Fix and side-effect check:** Added a conditional notification block to `rate_song` before committing the transaction. If the rating user is not the song's original sharer, it calls `create_notification` with type `song_rated` and a description of the rating. Created a new unit test suite (`tests/test_notifications.py`) to verify notification creation when rated by others, and the absence of notifications when rating one's own song. All tests pass.
+
