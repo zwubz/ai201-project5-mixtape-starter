@@ -10,7 +10,7 @@ from app import db
 from models import User, Song, ListeningEvent
 
 
-RECENT_THRESHOLD = timedelta(hours=24)
+RECENT_THRESHOLD = timedelta(minutes=30)  # Define what counts as "recent" for the feed 
 
 
 def get_friends_listening_now(user_id: str) -> list[dict]:

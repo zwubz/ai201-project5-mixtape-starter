@@ -86,7 +86,7 @@ This traces what happens when a user adds a song to a collaborative playlist:
 ## Root Cause Analysis
 
 ### Issue 1: My listening streak keeps resetting
-*   **How you reproduced it:**
+*   **How was reproduced:**
     *   *Inputs:* A user with `listening_streak = 5` and a `last_listened_at` timestamp set to a Saturday (e.g., June 27, 2026).
     *   *Sequence of actions:* Recorded a listening event for that user on Sunday (e.g., June 28, 2026).
     *   *Data condition:* The consecutive-day gap `days_since_last` is exactly 1 day.
@@ -94,3 +94,13 @@ This traces what happens when a user adds a song to a collaborative playlist:
 *   **Found the root cause:** Traced the `/songs/<song_id>/listen` POST route in `routes/songs.py` which calls `record_listening_event` in `services/streak_service.py`. Followed the call stack into `update_listening_streak()`. Inspected line 73 and noticed the condition `and today.weekday() != 6` on the increment block, which specifically targets Sundays and changes the execution flow.
 *   **The root cause:** Python's `datetime.date.weekday()` returns `6` for Sunday. In `streak_service.py`, the condition `elif days_since_last == 1 and today.weekday() != 6:` explicitly prevented the streak from incrementing if the current day was Sunday. When a user listened on Sunday after listening on Saturday, `days_since_last == 1` was true, but `today.weekday() != 6` was false. This caused the streak logic to bypass the increment block and fall into the `else` block, resetting `user.listening_streak = 1`.
 *   **Fix and side-effect check:** Removed `and today.weekday() != 6` from the conditional check. This allows any consecutive-day listening event (including Saturday-to-Sunday) to increment the streak. Verified that non-consecutive days (skipped days) still correctly reset the streak to 1, and same-day listens (double counting) do not change the streak. The unit tests in `tests/test_streaks.py` (specifically `test_streak_increments_on_sunday`) now pass.
+
+### Issue 2: Friends Listening Now shows people from yesterday
+*   **How was reproduced:**
+    *   *Inputs:* A user and an active friend. The friend has a listening event recorded 10 hours ago (representing the previous calendar day).
+    *   *Sequence of actions:* Queried the user's friend feed via `GET /feed/<user_id>/listening-now`.
+    *   *Data condition:* The friend's activity timestamp is older than the local calendar day's start but less than 24 hours ago.
+    *   *Trigger:* The endpoint returned the friend's 10-hour-old listen event in the "Listening Now" section, showing outdated listening history from yesterday.
+*   **Found the root cause:** Followed the routing endpoint `/feed/<user_id>/listening-now` in `routes/feed.py` to `get_friends_listening_now` in `services/feed_service.py`. Checked `RECENT_THRESHOLD` on line 13 and confirmed it was set to 24 hours.
+*   **The root cause:** The `RECENT_THRESHOLD` constant in `feed_service.py` was set to `timedelta(hours=24)`. In a real-time listening feed, "now" is expected to span a short period (e.g., 30 minutes to match the seed data comment), whereas 24 hours includes activities from the previous calendar day. Because of this, the database filter `ListeningEvent.listened_at >= cutoff` queried and returned events that were up to a day old.
+*   **Fix and side-effect check:** Changed `RECENT_THRESHOLD` to `timedelta(minutes=30)`. Verified that friends who listened 10 hours ago are successfully filtered out of the "Listening Now" feed, while friends who listened 10-20 minutes ago are still included. Confirmed that the separate historic `get_activity_feed` remains unaffected because it does not use the `RECENT_THRESHOLD` constant and instead relies on a numeric query limit.
