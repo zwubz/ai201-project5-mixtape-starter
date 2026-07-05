@@ -125,3 +125,12 @@ This traces what happens when a user adds a song to a collaborative playlist:
 *   **The root cause:** The function `rate_song` recorded the rating in the database but lacked any notification dispatch logic. It did not perform a check to see if the rater was different from the original song sharer (`song.shared_by != user_id`) and failed to call `create_notification()` to write a notification entry.
 *   **Fix and side-effect check:** Added a conditional notification block to `rate_song` before committing the transaction. If the rating user is not the song's original sharer, it calls `create_notification` with type `song_rated` and a description of the rating. Created a new unit test suite (`tests/test_notifications.py`) to verify notification creation when rated by others, and the absence of notifications when rating one's own song. All tests pass.
 
+### Issue 5: The last song in a playlist never shows up
+*   **How was reproduced:**
+    *   *Inputs:* A playlist containing 5 songs.
+    *   *Sequence of actions:* Fetched the playlist songs via `/playlists/<playlist_id>/songs`.
+    *   *Data condition:* The playlist has multiple songs ordered by their entry position.
+    *   *Trigger:* The endpoint returned only the first 4 songs, leaving the 5th song missing.
+*   **Found the root cause:** Traced the playlist songs route in `routes/playlists.py` to `get_playlist_songs` in `services/playlist_service.py`. Inspected the return statement on line 66.
+*   **The root cause:** The return statement in `get_playlist_songs` was written as `return [song.to_dict() for song in songs[:-1]]`. The Python list slice `[:-1]` truncates the list by dropping the final element. This off-by-one error prevented the last song of any playlist from being returned.
+*   **Fix and side-effect check:** Changed the return statement to `[song.to_dict() for song in songs]` to return all songs in the list. Verified that a 5-song playlist now returns all 5 songs in the correct ascending order of their position, and empty playlists still return an empty list without errors. Unit tests in `tests/test_playlists.py` now pass.
